@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prompt Quality Scoring & Optimization Prototype</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: Arial, sans-serif;
+    background: #f4f6f8; color: #17202a;
+  }
+  .container { max-width: 980px; margin: 35px auto; padding: 20px; }
+  .card {
+    background: white; border-radius: 16px; padding: 28px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.08); margin-bottom: 20px;
+  }
+  h1 { margin: 0 0 8px; font-size: 30px; }
+  .subtitle { color: #68727d; margin-bottom: 24px; }
+  label { font-weight: 700; display: block; margin-bottom: 8px; }
+  textarea {
+    width: 100%; min-height: 130px; padding: 14px; border: 1px solid #ccd3da;
+    border-radius: 10px; resize: vertical; font-size: 15px;
+  }
+  button {
+    border: 0; border-radius: 9px; padding: 12px 18px;
+    font-weight: 700; cursor: pointer; margin-top: 12px;
+  }
+  .primary { background: #17202a; color: white; }
+  .secondary { background: #e9edf1; color: #17202a; margin-left: 8px; }
+  .hidden { display: none; }
+  .score-area { display: flex; align-items: center; gap: 24px; margin: 20px 0; }
+  .score {
+    width: 110px; height: 110px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 25px; font-weight: 800; border: 9px solid #dfe5ea;
+  }
+  .score-text h2 { margin: 0 0 6px; }
+  .metric { margin: 16px 0; }
+  .metric-top { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 6px; }
+  .bar { height: 9px; background: #e5e9ed; border-radius: 10px; overflow: hidden; }
+  .fill { height: 100%; background: #17202a; border-radius: 10px; }
+  .suggestion {
+    display: flex; gap: 10px; padding: 12px; margin: 8px 0;
+    border: 1px solid #d9dee3; border-radius: 9px;
+  }
+  .suggestion input { margin-top: 3px; }
+  .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .box { background: #f6f8fa; border-radius: 10px; padding: 14px; }
+  .box h3 { margin-top: 0; font-size: 15px; }
+  .improvement { font-size: 19px; font-weight: 800; margin-top: 16px; }
+  .note { font-size: 12px; color: #737d87; margin-top: 18px; line-height: 1.5; }
+  @media(max-width:700px) {
+    .before-after { grid-template-columns: 1fr; }
+    .score-area { align-items: flex-start; }
+  }
+</style>
+
+<style>
+/* Hide +points only on individual improvement cards */
+.suggestion .points,
+.suggestion .score-points,
+.suggestion .improvement-points,
+.suggestion .points-badge,
+.suggestion [class*="point"],
+.suggestion [class*="score"] {
+  display: none !important;
+}
+</style>
+
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>Prompt Quality Scoring & Optimization</h1>
+    <div class="subtitle">Prototype — analyze a prompt, identify gaps, and improve its quality.</div>
+
+    <label for="prompt">Enter your prompt</label>
+    <textarea id="prompt" placeholder="Example: Write a marketing email for my skincare product."></textarea>
+    <button class="primary" onclick="analyze()">Analyze Prompt</button>
+  </div>
+
+  <div id="results" class="card hidden">
+    <h2>Prompt Analysis</h2>
+    <div class="score-area">
+      <div class="score" id="scoreCircle"><span id="score">0</span></div>
+      <div class="score-text">
+        <h2 id="scoreLabel">Prompt Quality</h2>
+        <div id="scoreExplanation"></div>
+      </div>
+    </div>
+
+    <div id="metrics"></div>
+
+    <h2>Suggested Improvements</h2>
+    <div id="suggestions"></div>
+    <button class="primary" onclick="improve()">Apply Selected Suggestions</button>
+    <button class="secondary" onclick="resetAll()">Start Over</button>
+
+    <div id="updated" class="hidden" style="margin-top:28px;">
+      <h2>Updated Prompt</h2>
+      <div class="before-after">
+        <div class="box"><h3>Original</h3><div id="originalPrompt"></div></div>
+        <div class="box"><h3>Improved</h3><div id="improvedPrompt"></div></div>
+      </div>
+      <div class="improvement" id="improvementText"></div>
+      <div class="note">
+        Prototype scoring is a rule-based demonstration of prompt quality, not a prediction of an LLM's actual response probability.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const criteria = [
+  {key:"clarity", name:"Objective clarity", weight:15},
+  {key:"context", name:"Context", weight:10},
+  {key:"specificity", name:"Specificity", weight:10},
+  {key:"role", name:"Role / persona", weight:10},
+  {key:"constraints", name:"Constraints", weight:10},
+  {key:"format", name:"Output format", weight:10},
+  {key:"audience", name:"Audience", weight:10},
+  {key:"tone", name:"Tone", weight:5},
+  {key:"success", name:"Success criteria", weight:10},
+  {key:"examples", name:"Examples / references", weight:10}
+];
+
+function scorePrompt(p) {
+  const s = p.toLowerCase();
+  return {
+    clarity: /\b(write|create|generate|explain|summarize|analyze|compare|design|list|draft|translate|calculate|review|evaluate|make|develop)\b/.test(s) ? 15 : 4,
+    context: (s.length > 55 || /\b(context|background|product|project|situation|about|for my|based on)\b/.test(s)) ? 10 : 3,
+    specificity: (s.length > 100 || /\b(specific|exact|include|must|should|key details|requirements)\b/.test(s)) ? 10 : 3,
+    role: /\b(act as|you are|as a|role|expert|specialist|consultant|manager|teacher|coach|developer)\b/.test(s) ? 10 : 0,
+    constraints: /\b(under|less than|maximum|minimum|limit|within|only|do not|avoid|must not|words?|characters?|points?|no more)\b/.test(s) ? 10 : 1,
+    format: /\b(table|bullet|bullets|list|json|email|paragraph|steps|step-by-step|headings?|format|columns?|markdown)\b/.test(s) ? 10 : 1,
+    audience: /\b(audience|customer|customers|beginner|expert|manager|student|developer|client|users?|for \w+)\b/.test(s) ? 10 : 1,
+    tone: /\b(tone|professional|friendly|formal|casual|persuasive|concise|empathetic|technical|simple)\b/.test(s) ? 5 : 0,
+    success: /\b(success|successful|goal|objective|criteria|quality|ensure|achieve|should result|measure|accurate|relevant)\b/.test(s) ? 10 : 1,
+    examples: /\b(example|examples|sample|samples|reference|refer to|like this|similar to|input-output|few-shot)\b/.test(s) ? 10 : 0
+  };
+}
+
+function getScore(scores) {
+  return Object.values(scores).reduce((a,b)=>a+b,0);
+}
+
+function analyze() {
+  const p = document.getElementById("prompt").value.trim();
+  if (!p) { alert("Please enter a prompt first."); return; }
+
+  const scores = scorePrompt(p);
+  const total = getScore(scores);
+  renderMetrics(scores);
+  document.getElementById("score").textContent = total;
+  document.getElementById("scoreExplanation").textContent =
+    total >= 100 ? "Excellent! Your prompt covers all prototype quality criteria." :
+    total >= 80 ? "Strong prompt. A few additional details can take it to 100." :
+    total >= 60 ? "Good foundation. Add the missing requirements below to strengthen it." :
+    "The prompt needs more context, structure, and specific instructions.";
+
+  const suggestions = [];
+  if (scores.clarity < 15) suggestions.push(["clarity","Clarify the exact objective or task."]);
+  if (scores.context < 10) suggestions.push(["context","Add relevant context or background information."]);
+  if (scores.specificity < 10) suggestions.push(["specificity","Add specific requirements, details, or expected content."]);
+  if (scores.role < 10) suggestions.push(["role","Define a role or persona for the AI to follow."]);
+  if (scores.constraints < 10) suggestions.push(["constraints","Add constraints such as length, limits, or what to avoid."]);
+  if (scores.format < 10) suggestions.push(["format","Specify the desired output format, such as bullets, table, email, or JSON."]);
+  if (scores.audience < 10) suggestions.push(["audience","Define the target audience or intended user."]);
+  if (scores.tone < 5) suggestions.push(["tone","Specify the desired tone or communication style."]);
+  if (scores.success < 10) suggestions.push(["success","Define what a successful or high-quality answer should achieve."]);
+  if (scores.examples < 10) suggestions.push(["examples","Add an example, sample, or reference showing the desired result."]);
+
+  document.getElementById("suggestions").innerHTML = suggestions.length
+    ? suggestions.map(x => `<div class="suggestion"><input type="checkbox" value="${x[0]}" id="s_${x[0]}"><label for="s_${x[0]}">${x[1]}</label></div>`).join("")
+    : "<p>🎉 Your prompt meets all prototype quality criteria.</p>";
+
+  document.getElementById("results").classList.remove("hidden");
+  document.getElementById("updated").classList.add("hidden");
+}
+
+function improve() {
+  const p = document.getElementById("prompt").value.trim();
+  if (!p) return;
+
+  const selected = [...document.querySelectorAll("#suggestions input:checked")].map(x=>x.value);
+  if (selected.length !== 1) {
+    alert("Please select exactly ONE improvement at a time.");
+    return;
+  }
+
+  const key = selected[0];
+  const additions = {
+    clarity: " Clearly state the exact objective and task to complete.",
+    context: " Context: provide relevant background information and key details needed for the task.",
+    specificity: " Be specific about the required content, details, and expected result.",
+    role: " Act as an experienced subject-matter expert appropriate for this task.",
+    constraints: " Follow these constraints: keep the response within the requested limits and avoid irrelevant information.",
+    format: " Present the answer in a clear, structured format with headings and bullet points where appropriate.",
+    audience: " Target the response to the intended audience and their level of knowledge.",
+    tone: " Use a professional, clear, and appropriate tone.",
+    success: " A successful response should be accurate, relevant, complete, and directly address the stated objective.",
+    examples: " Use examples or references where helpful to demonstrate the expected style or result."
+  };
+
+  const oldScore = getScore(scorePrompt(p));
+  const improved = p + additions[key];
+  const newScore = Math.max(oldScore, getScore(scorePrompt(improved)));
+
+  document.getElementById("originalPrompt").textContent = p;
+  document.getElementById("improvedPrompt").textContent = improved;
+  document.getElementById("improvementText").textContent =
+    `Prompt Quality: ${oldScore} → ${newScore}  |  Improvement: +${newScore-oldScore}`;
+
+  document.getElementById("prompt").value = improved;
+  document.getElementById("updated").classList.remove("hidden");
+
+  // Recalculate and show the next single-step choices.
+  const remaining = scorePrompt(improved);
+  const remainingTotal = getScore(remaining);
+  renderMetrics(remaining);
+  document.getElementById("score").textContent = remainingTotal;
+  document.getElementById("scoreExplanation").textContent =
+    remainingTotal >= 100
+      ? "🎉 Prompt optimized successfully — 100/100."
+      : `Step completed. Your prompt improved by ${newScore-oldScore} point${newScore-oldScore === 1 ? "" : "s"}. Choose ONE next improvement.`;
+
+  // Maintain a visible score progression.
+  let history = document.getElementById("scoreHistory");
+  if (!history) {
+    history = document.createElement("div");
+    history.id = "scoreHistory";
+    history.style.cssText = "margin:18px 0;padding:14px;border-radius:10px;background:#f6f8fa;font-weight:700;";
+    document.getElementById("metrics").insertAdjacentElement("afterend", history);
+  }
+  const existing = history.dataset.values ? history.dataset.values.split(",").map(Number) : [oldScore];
+  if (existing[existing.length-1] !== newScore) existing.push(newScore);
+  history.dataset.values = existing.join(",");
+  history.innerHTML = `<div style="font-size:13px;color:#68727d;margin-bottom:6px;">Score progression</div>
+    <div>${existing.map((v,i)=> i < existing.length-1 ? `${v} <span style="color:#68727d;">→</span> ` : `<strong>${v}</strong>`).join("")}${remainingTotal < 100 ? ' <span style="color:#68727d;">→ ?</span>' : ' 🎉'}</div>`;
+
+  const next = [];
+  if (remaining.clarity < 15) next.push(["clarity","Clarify the exact objective or task."]);
+  if (remaining.context < 10) next.push(["context","Add relevant context or background information."]);
+  if (remaining.specificity < 10) next.push(["specificity","Add specific requirements, details, or expected content."]);
+  if (remaining.role < 10) next.push(["role","Define a role or persona for the AI to follow."]);
+  if (remaining.constraints < 10) next.push(["constraints","Add constraints such as length, limits, or what to avoid."]);
+  if (remaining.format < 10) next.push(["format","Specify the desired output format."]);
+  if (remaining.audience < 10) next.push(["audience","Define the target audience or intended user."]);
+  if (remaining.tone < 5) next.push(["tone","Specify the desired tone or communication style."]);
+  if (remaining.success < 10) next.push(["success","Define what a successful or high-quality answer should achieve."]);
+  if (remaining.examples < 10) next.push(["examples","Add an example, sample, or reference showing the desired result."]);
+
+  document.getElementById("suggestions").innerHTML = next.length
+    ? `<p><strong>${100-remainingTotal} points remaining.</strong> Select ONE next improvement:</p>` +
+      next.map(x => `<div class="suggestion"><input type="checkbox" name="nextImprovement" value="${x[0]}" id="s3_${x[0]}"><label for="s3_${x[0]}">${x[1]}</label></div>`).join("")
+    : "<p>🎉 Your prompt has reached 100/100.</p>";
+
+  document.getElementById("updated").scrollIntoView({behavior:"smooth"});
+}
+
+function resetAll() {
+  document.getElementById("prompt").value = "";
+  document.getElementById("results").classList.add("hidden");
+  const history = document.getElementById("scoreHistory");
+  if (history) history.remove();
+}
+function renderMetrics(scores) {
+  document.getElementById("metrics").innerHTML = criteria.map(c => {
+    const value = scores[c.key];
+    return `<div class="metric">
+      <div class="metric-top"><span>${c.name}</span><span>${value}/${c.weight}</span></div>
+      <div class="bar"><div class="fill" style="width:${(value/c.weight)*100}%"></div></div>
+    </div>`;
+  }).join("");
+}
+
+function improve() {
+  const p = document.getElementById("prompt").value.trim();
+  if (!p) return;
+
+  const selected = [...document.querySelectorAll("#suggestions input:checked")].map(x=>x.value);
+  if (!selected.length) { alert("Select at least one suggestion."); return; }
+
+  let improved = p;
+  const additions = {
+    context: " Context: include the relevant background information and key details needed for the task.",
+    specificity: " Be specific about the required content and important details.",
+    constraints: " Keep the response concise and follow clearly defined length or content limits.",
+    format: " Present the answer in a clear, structured format with headings and bullet points where appropriate.",
+    audience: " Target the response to the intended audience and use an appropriate tone."
+  };
+  selected.forEach(k => improved += additions[k]);
+
+  const oldScore = getScore(scorePrompt(p));
+  const newScore = getScore(scorePrompt(improved));
+
+  document.getElementById("originalPrompt").textContent = p;
+  document.getElementById("improvedPrompt").textContent = improved;
+  document.getElementById("improvementText").textContent =
+    `Prompt Quality: ${oldScore} → ${newScore}  |  Improvement: +${newScore-oldScore}`;
+
+  document.getElementById("updated").classList.remove("hidden");
+  document.getElementById("updated").scrollIntoView({behavior:"smooth"});
+}
+
+function resetAll() {
+  document.getElementById("prompt").value = "";
+  document.getElementById("results").classList.add("hidden");
+  const history = document.getElementById("scoreHistory");
+  if (history) history.remove();
+}
+</script>
+
+<script>
+(function () {
+  let applyingBatch = false;
+
+  // Keep all suggestion checkboxes selectable.
+  document.addEventListener("change", function (e) {
+    if (e.target.matches("#suggestions input[type='checkbox']")) {
+      e.target.disabled = false;
+    }
+  });
+
+  // Preserve the original improve handler if the prototype defines one.
+  const originalImprove = window.improve;
+
+  window.improve = function () {
+    if (applyingBatch) return;
+
+    const selected = Array.from(
+      document.querySelectorAll("#suggestions input[type='checkbox']:checked")
+    );
+
+    if (!selected.length) {
+      if (typeof originalImprove === "function") originalImprove();
+      return;
+    }
+
+    applyingBatch = true;
+
+    // Capture the selected suggestion cards before the original renderer
+    // changes the DOM.
+    const cards = selected.map(function (input) {
+      return input.closest(".suggestion") || input.parentElement;
+    });
+
+    // If the original prototype exposes an individual improvement action,
+    // use it for each selected item. Otherwise fall back to the original
+    // handler once, preserving the existing UI/update behavior.
+    if (typeof window.applyImprovement === "function") {
+      selected.forEach(function (input) {
+        const key = input.dataset.key || input.value;
+        window.applyImprovement(key);
+      });
+
+      if (typeof window.analyze === "function") window.analyze();
+    } else if (typeof originalImprove === "function") {
+      // Trigger the original improvement flow once per selected item.
+      // The original flow is responsible for score, points-added and
+      // updated-prompt rendering.
+      selected.forEach(function (input) {
+        input.dataset.batchSelected = "true";
+      });
+      originalImprove();
+    }
+
+    applyingBatch = false;
+  };
+})();
+</script>
+
+</body>
+</html>
